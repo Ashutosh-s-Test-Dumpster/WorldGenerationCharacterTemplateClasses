@@ -17,7 +17,6 @@ class WorldDefinition:
         self,
         name: str,
         description: str,
-        time_scale: float = 1.0,
         locations: List[Dict[str, Any]] = None,
         global_events: List[Dict[str, Any]] = None,
         relationships: Dict[str, Dict[str, str]] = None,
@@ -25,7 +24,6 @@ class WorldDefinition:
     ):
         self.name = name
         self.description = description
-        self.time_scale = time_scale
         self.locations = locations or []
         self.global_events = global_events or []
         self.relationships = relationships or {}
@@ -110,7 +108,6 @@ class CharacterTemplate(WorldDefinition):
         super().__init__(
             name=world.name,
             description=world.description,
-            time_scale=world.time_scale,
             locations=world.locations,
             global_events=world.global_events,
             relationships=world.relationships,
