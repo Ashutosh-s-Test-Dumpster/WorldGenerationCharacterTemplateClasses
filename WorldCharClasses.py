@@ -96,6 +96,7 @@ class CharacterTemplate(WorldDefinition):
         self,
         world: WorldDefinition,
         name: str,
+        date_of_birth: datetime.date,        
         personality: Dict[str, float], #basic description would be something like {"hospitality":0.4, "ego": 0.9}
         timezone: str, # something like "-8" 
         location: str, 
@@ -115,6 +116,7 @@ class CharacterTemplate(WorldDefinition):
         )
         self.world = world
         self.character_name = name
+        self.date_of_birth = date_of_birth        
         self.personality = personality
         self.timezone = int(timezone)
         self.location = location
@@ -149,7 +151,33 @@ class CharacterTemplate(WorldDefinition):
                 self.jet_lag_recovery_date = self.world.current_date + datetime.timedelta(days=recovery_days)
                 self.add_current_experience(f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
 
+    def get_age(self) -> int:
+        today = self.world.current_date.date()
+        return today.year - self.date_of_birth.year - ((today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day))
+
+    def is_birthday(self) -> bool:
+        return (self.world.current_date.month, self.world.current_date.day) == (self.date_of_birth.month, self.date_of_birth.day)
+
+    def celebrate_birthday(self):
+        age = self.get_age()
+        celebration = f"Celebrated {self.character_name}'s {age}th birthday!"
+        self.add_current_experience(celebration)
+        
+        # to-do
+        # probably integrate some openai-based implementation to add some special birthday today tasks based on the character's personality
+
+        # Notify friends about the birthday
+        for friend_name in self.friends:
+            friend = self.world.characters.get(friend_name)
+            if friend:
+                friend.add_current_experience(f"It's {self.character_name}'s {age}th birthday today!")
+                friend.add_task_done(f"Wished {self.character_name} a happy birthday")
+                
     def update_daily(self):
+        # Check if it's the character's birthday
+        if self.is_birthday():
+            self.celebrate_birthday()
+            
         # Check if jet lag has recovered
         if self.is_jet_lagged and self.world.current_date >= self.jet_lag_recovery_date:
             self.is_jet_lagged = False
