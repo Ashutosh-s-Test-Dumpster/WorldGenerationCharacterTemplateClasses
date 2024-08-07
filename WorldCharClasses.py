@@ -355,3 +355,24 @@ class CharacterTemplate(WorldDefinition):
         )
         
         return response.choices[0].message.content.strip()
+
+    def search_similar_memories(self, query: str, top_k: int = 3):
+        query_embedding = self.get_embedding(query)
+    
+        response = skylow_memories_index.query(
+            vector=query_embedding,
+            filter={"character_name": {"$eq": self.character_name}},
+            top_k=top_k,
+            include_values=False,
+            include_metadata=True,
+        )
+    
+        similar_memories = []
+        for match in response.matches:
+            memory = {
+                "user_message": match.metadata["user_message"],
+                "date": match.metadata["createdAt"]
+            }
+            similar_memories.append(memory)
+    
+        return similar_memories
