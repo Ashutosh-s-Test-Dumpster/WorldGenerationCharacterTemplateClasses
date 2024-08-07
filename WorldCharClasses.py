@@ -11,6 +11,25 @@ from typing import List, Dict, Any
 import datetime
 import pytz
 import random
+import os
+
+from openai import OpenAI
+from pinecone.grpc import PineconeGRPC as Pinecone
+from pydantic import BaseModel
+
+pinecone_client = Pinecone(api_key=os.environ.get("***"))
+# warning: use a different index because this isn't chat memory, it's a simulation of "brain memory"
+skylow_memories_index = pinecone_client.Index("***")
+openai_client = OpenAI(api_key=os.environ.get("***"))
+embedding_model = "text-embedding-3-small"
+
+class Memory(BaseModel):
+    skylow_message: str
+    user_message: str
+    date: str
+
+class Memories(BaseModel):
+    memories: List[Memory]
 
 class WorldDefinition:
     def __init__(
@@ -126,13 +145,54 @@ class CharacterTemplate(WorldDefinition):
         self.past_experiences = past_experiences
         self.texting_style = texting_style
         self.friends = []
-        self.tasks_done_today = []
-        self.user_can_recommend_tasks = True # set true by default
         self.skills = {}
-        self.current_experiences = [] 
         self.is_jet_lagged = False
         self.jet_lag_recovery_date = None
         self._sync_friends_with_world()
+
+    def get_embedding(self, text: str) -> list:
+        text = text.replace("\n", " ")
+        return openai_client.embeddings.create(input=[text], model=embedding_model).data[0].embedding
+
+    def add_memory(self, skylow_message: str, user_message: str):
+        date = datetime.datetime.now()
+        date_string: str = date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        date_timestamp: int = int(date.timestamp())
+        memory_embedding: list = self.get_embedding(skylow_message + user_message)
+
+        vector = {
+            "id": f"{self.character_name}#{date}",
+            "values": memory_embedding,
+            "metadata": {
+                "character_name": self.character_name,
+                "createdAt": date_string,
+                "skylow_message": skylow_message,
+                "user_message": user_message,
+                "timestamp": date_timestamp,
+            },
+        }
+        skylow_memories_index.upsert(vectors=[vector])
+
+    def get_memories(self, query: str, k: int = 5) -> Memories:
+        query_embedding = self.get_embedding(query)
+        response = skylow_memories_index.query(
+            vector=query_embedding,
+            filter={"character_name": {"$eq": self.character_name}},
+            top_k=k,
+            include_values=False,
+            include_metadata=True,
+        )
+
+        memory_list = []
+        for match in response.matches:
+            memory = Memory(
+                skylow_message=match.metadata["skylow_message"],
+                user_message=match.metadata["user_message"],
+                date=match.metadata["createdAt"],
+            )
+            memory_list.append(memory)
+        
+        return Memories(memories=memory_list)
 
     # make the character move there, and remember it by storing it in current experience (so will be eventually forgotten)
     def move_to_location(self, location_name: str):
@@ -141,7 +201,7 @@ class CharacterTemplate(WorldDefinition):
             old_timezone = self.timezone
             self.location = location_name
             self.timezone = location["timezone"]
-            self.add_current_experience(f"Moved to {location_name}.")
+            self.add_memory("System", f"Moved to {location_name}.")
            
             # Check for jet lag
             timezone_diff = abs(self.timezone - old_timezone)
@@ -149,7 +209,7 @@ class CharacterTemplate(WorldDefinition):
                 recovery_days = min(timezone_diff // 2, 7)  # Max 7 days to recover
                 self.is_jet_lagged = True
                 self.jet_lag_recovery_date = self.world.current_date + datetime.timedelta(days=recovery_days)
-                self.add_current_experience(f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
+                self.add_memory("System", f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
 
     def get_age(self) -> int:
         today = self.world.current_date.date()
@@ -161,33 +221,41 @@ class CharacterTemplate(WorldDefinition):
     def celebrate_birthday(self):
         age = self.get_age()
         celebration = f"Celebrated {self.character_name}'s {age}th birthday!"
-        self.add_current_experience(celebration)
+        self.add_memory("System", celebration)
         
-        # to-do
-        # probably integrate some openai-based implementation to add some special birthday today tasks based on the character's personality
-
-        # Notify friends about the birthday
         for friend_name in self.friends:
             friend = self.world.characters.get(friend_name)
             if friend:
-                friend.add_current_experience(f"It's {self.character_name}'s {age}th birthday today!")
+                friend.add_memory("System", f"It's {self.character_name}'s {age}th birthday today!")
                 friend.add_task_done(f"Wished {self.character_name} a happy birthday")
-                
+        
+        birthday_tasks = self.generate_birthday_tasks()
+        for task in birthday_tasks:
+            self.add_task_done(task)
+
     def update_daily(self):
-        # Check if it's the character's birthday
         if self.is_birthday():
             self.celebrate_birthday()
             
-        # Check if jet lag has recovered
         if self.is_jet_lagged and self.world.current_date >= self.jet_lag_recovery_date:
             self.is_jet_lagged = False
-            self.add_current_experience("Recovered from jet lag.")
+            self.add_memory("System", "Recovered from jet lag.")
 
-        # Summarize and add tasks done today to current experiences
-        if self.tasks_done_today:
-            # to-do
-            # use openai here to summarise all the tasks of the day and append to current experiences before clearing
-            self.clear_tasks_done_today()
+        day_summary = self.summarize_day()
+        self.add_memory("System", day_summary)
+        
+    def summarize_day(self) -> str:
+        recent_memories = self.get_memories(query="today's events", k=10)
+        memory_text = "\n".join([f"Skylow: {m.skylow_message}\nUser: {m.user_message}" for m in recent_memories.memories])
+        
+        prompt = f"Summarize the following events of the day for {self.character_name}:\n\n{memory_text}"
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": prompt}],
+        )
+        
+        return response.choices[0].message.content        
 
     # may have to be implemented in a more advanced way    
     def develop_skill(self, skill_name: str, increase: float = 0.1):
@@ -200,6 +268,23 @@ class CharacterTemplate(WorldDefinition):
             char_name for char_name, relation in self.world.relationships.get(self.character_name, {}).items()
             if relation.lower() == "friend"
         ]
+        
+    def add_task_done(self, task: str):
+        self.add_memory("System", f"Task completed: {task}")
+
+    def recommend_task(self, task: str):
+        # Use OpenAI to determine if the character accepts the task based on personality
+        prompt = f"Given {self.character_name}'s personality: {self.personality}, would they accept the task: '{task}'? Respond with 'Yes' or 'No'."
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": prompt}],
+        )
+        
+        if response.choices[0].message.content.strip().lower() == "yes":
+            self.add_task_done(task)
+            return True
+        return False
 
     def add_friend(self, friend_name: str):
         if friend_name not in self.friends and friend_name != self.character_name:
@@ -220,48 +305,9 @@ class CharacterTemplate(WorldDefinition):
                 friend.receive_message(self.character_name, message)
 
     def receive_message(self, sender_name: str, message: str):
-        # to-do
-        # maybe you'd want to use openai here to summarise the message first
-        experience = f"Received a message from {sender_name}: {message}"
-        self.add_current_experience(experience)
-
-    def add_current_experience(self, experience: str):
-        timestamp = self.world.current_date.strftime("%Y-%m-%d")
-        self.current_experiences.append(f"[{timestamp}] {experience}")
-        # Limit the number of current experiences to the last 10
-        # possibly increase this when more current experience worthy things are happening consistently
-        self.current_experiences = self.current_experiences[-10:]
-
-    def add_user_shared_info(self, info: str):
-        self.add_current_experience(f"User shared: {info}")
-
-    def generate_random_event(self):
-        # to-do
-        # add some implementation with openai here
-        # take into consideration entries in current_experience, past_experiences, goals and interests
-        return
-
-    def get_current_experiences(self) -> List[str]:
-        return self.current_experiences
-
-    def clear_current_experiences(self):
-        self.current_experiences.clear()
-
-    # you can use random event with this, or maybe some user recommendation
-    def add_task_done(self, task: str):
-        self.tasks_done_today.append(task)
-
-    def clear_tasks_done_today(self):
-        self.tasks_done_today.clear()
-
-    def set_user_can_recommend_tasks(self, value: bool):
-        self.user_can_recommend_tasks = value
-
-    def recommend_task(self, task: str):
-        if self.user_can_recommend_tasks:
-            # maybe you'd want to use random module along with the character's personality to determine if it accepts
-            # to-do: place if block here
-            self.add_task_done(task)
+        summarized_message = self.summarize_message(message)
+        experience = f"Received a message from {sender_name}: {summarized_message}"
+        self.add_memory(sender_name, experience)
 
     def get_local_time(self) -> datetime.datetime:
         return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=self.timezone)))
@@ -280,3 +326,32 @@ class CharacterTemplate(WorldDefinition):
 
     def add_past_experience(self, experience: str):
         self.past_experiences.append(experience)
+
+    def generate_birthday_tasks(self) -> List[str]:
+        prompt = f"""
+        Generate 3-5 special birthday tasks for {self.character_name} based on their personality and interests:
+        Personality: {self.personality}
+        Interests: {self.interests}
+        Current location: {self.location}
+        """
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": prompt}],
+        )
+        
+        tasks = response.choices[0].message.content.split('\n')
+        return [task.strip() for task in tasks if task.strip()]
+
+    def summarize_message(self, message: str) -> str:
+        if len(message) <= 100:
+            return message
+        
+        prompt = f"Summarize the following message in 50 words or less:\n\n{message}"
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": prompt}],
+        )
+        
+        return response.choices[0].message.content.strip()
