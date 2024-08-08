@@ -14,22 +14,22 @@ import random
 import os
 
 from openai import OpenAI
+from dotenv import load_dotenv
 from pinecone.grpc import PineconeGRPC as Pinecone
 from pydantic import BaseModel
 
+load_dotenv(override=True)
+
 pinecone_client = Pinecone(api_key=os.environ.get("***"))
-# warning: use a different index because this isn't chat memory, it's a simulation of "brain memory"
-skylow_memories_index = pinecone_client.Index("***")
+# warning: todo: different index from skylow-memories because this isn't chat memory, it's a simulation of "brain memory"
+skylow_brainmemories_index = pinecone_client.Index("***")
 openai_client = OpenAI(api_key=os.environ.get("***"))
 embedding_model = "text-embedding-3-small"
 
-class Memory(BaseModel):
-    skylow_message: str
-    user_message: str
-    date: str
-
-class Memories(BaseModel):
-    memories: List[Memory]
+from src.memory_service import (
+    Memory,
+    Memories
+)
 
 class WorldDefinition:
     def __init__(
@@ -171,11 +171,11 @@ class CharacterTemplate(WorldDefinition):
                 "timestamp": date_timestamp,
             },
         }
-        skylow_memories_index.upsert(vectors=[vector])
+        skylow_brainmemories_index.upsert(vectors=[vector])
 
     def get_memories(self, query: str, k: int = 5) -> Memories:
         query_embedding = self.get_embedding(query)
-        response = skylow_memories_index.query(
+        response = skylow_brainmemories_index.query(
             vector=query_embedding,
             filter={"character_name": {"$eq": self.character_name}},
             top_k=k,
@@ -359,7 +359,7 @@ class CharacterTemplate(WorldDefinition):
     def search_similar_memories(self, query: str, top_k: int = 3):
         query_embedding = self.get_embedding(query)
     
-        response = skylow_memories_index.query(
+        response = skylow_brainmemories_index.query(
             vector=query_embedding,
             filter={"character_name": {"$eq": self.character_name}},
             top_k=top_k,
