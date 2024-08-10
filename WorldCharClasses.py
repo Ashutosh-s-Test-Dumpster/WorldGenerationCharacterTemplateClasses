@@ -13,23 +13,26 @@ import pytz
 import random
 import os
 
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 from pinecone.grpc import PineconeGRPC as Pinecone
 from pydantic import BaseModel
 
-load_dotenv(override=True)
+load_dotenv()
 
-pinecone_client = Pinecone(api_key=os.environ.get("***"))
+pinecone_client = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 # warning: todo: different index from skylow-memories because this isn't chat memory, it's a simulation of "brain memory"
-skylow_brainmemories_index = pinecone_client.Index("***")
-openai_client = OpenAI(api_key=os.environ.get("***"))
+skylow_brainmemories_index = pinecone_client.Index("fire-ambulance-quick-setup")
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 embedding_model = "text-embedding-3-small"
 
-from src.memory_service import (
-    Memory,
-    Memories
-)
+class Memory(BaseModel):
+    skylow_message: str
+    user_message: str
+    date: str
+
+class Memories(BaseModel):
+    memories: List[Memory]
 
 class WorldDefinition:
     def __init__(
@@ -68,6 +71,13 @@ class WorldDefinition:
         for event in self.global_events:
             if event["date"] == self.current_date.strftime("%Y-%m-%d"):
                 print(f"Global Event Triggered: {event['name']} - {event['description']}")
+
+    # Function to get the weather for a specific location
+    def get_weather(self, location_name: str) -> str:
+        for location in self.locations:
+            if location["name"] == location_name:
+                return location["weather"]
+        return "Location not found"
 
     def add_location(self, name: str, description: str, coordinates: tuple, timezone: int):
         self.locations.append({
@@ -123,7 +133,8 @@ class CharacterTemplate(WorldDefinition):
         interests: List[str],
         goals: List[str],
         past_experiences: List[str],
-        texting_style: str # maybe "uses several emojis with no caps lock and frequent slang"
+        texting_style: str, # maybe "uses several emojis with no caps lock and frequent slang"
+        character_description: str  # New parameter
     ):
         super().__init__(
             name=world.name,
@@ -144,6 +155,7 @@ class CharacterTemplate(WorldDefinition):
         self.goals = goals
         self.past_experiences = past_experiences
         self.texting_style = texting_style
+        self.character_description = character_description  # New attribute
         self.friends = []
         self.skills = {}
         self.is_jet_lagged = False
@@ -154,11 +166,46 @@ class CharacterTemplate(WorldDefinition):
         text = text.replace("\n", " ")
         return openai_client.embeddings.create(input=[text], model=embedding_model).data[0].embedding
 
-    def add_memory(self, skylow_message: str, user_message: str):
+    def add_memory(self, user_message: str):
+        prompt = f"Extract the most important information from this message in a concise format:\n\n{user_message}"
+        sys_prompt = """You are an AI assistant that extracts key information from messages. Your task is to:
+
+        1. Identify and extract only the most important and memorable information from the given message.
+        2. Focus on facts, events, opinions, or emotions that might be significant for future interactions or understanding the context of a conversation.
+        3. Ignore routine or trivial information such as simple greetings, small talk about the weather, or other non-consequential exchanges.
+        4. Summarize the key information in a concise format, ideally in 20 words or less.
+        5. If there is no significant information worth remembering, return an empty string.
+
+        Examples:
+        - Input: "Hi there! How are you doing today?"
+        Output: "" (empty string, as this is just a greeting)
+    
+        - Input: "I just got a new job at Google as a software engineer! I'm starting next month."
+        Output: "Got a new job as software engineer at Google, starting next month."
+    
+        - Input: "I'm feeling really upset because my dog passed away yesterday. He was with me for 15 years."
+        Output: "Dog passed away yesterday after 15 years, feeling very upset."
+    
+        - Input: "Did you hear about the new policy? They're implementing work-from-home Fridays starting next week."
+        Output: "New policy: work-from-home Fridays starting next week."
+
+        Remember, if there's nothing significant to extract, return an empty string."""
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        important_info = response.choices[0].message.content.strip()
+
+        if important_info == '""':
+            return
+
         date = datetime.datetime.now()
         date_string: str = date.strftime("%Y-%m-%dT%H:%M:%SZ")
         date_timestamp: int = int(date.timestamp())
-        memory_embedding: list = self.get_embedding(skylow_message + user_message)
+        memory_embedding: list = self.get_embedding(important_info)
 
         vector = {
             "id": f"{self.character_name}#{date}",
@@ -166,14 +213,13 @@ class CharacterTemplate(WorldDefinition):
             "metadata": {
                 "character_name": self.character_name,
                 "createdAt": date_string,
-                "skylow_message": skylow_message,
-                "user_message": user_message,
+                "important_info": important_info,
                 "timestamp": date_timestamp,
             },
         }
         skylow_brainmemories_index.upsert(vectors=[vector])
 
-    def get_memories(self, query: str, k: int = 5) -> Memories:
+    def get_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         query_embedding = self.get_embedding(query)
         response = skylow_brainmemories_index.query(
             vector=query_embedding,
@@ -185,14 +231,13 @@ class CharacterTemplate(WorldDefinition):
 
         memory_list = []
         for match in response.matches:
-            memory = Memory(
-                skylow_message=match.metadata["skylow_message"],
-                user_message=match.metadata["user_message"],
-                date=match.metadata["createdAt"],
-            )
+            memory = {
+                "important_info": match.metadata["important_info"],
+                "date": match.metadata["createdAt"],
+            }
             memory_list.append(memory)
         
-        return Memories(memories=memory_list)
+        return memory_list
 
     # make the character move there, and remember it by storing it in current experience (so will be eventually forgotten)
     def move_to_location(self, location_name: str):
