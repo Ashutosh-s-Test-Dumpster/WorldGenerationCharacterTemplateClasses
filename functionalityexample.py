@@ -133,7 +133,7 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
     ai_response = response.choices[0].message.content.strip()
 
     # Add the interaction to character's memory
-    character.add_memory(f"Someone said: {prompt}\nYou responded: {ai_response}")
+    character.add_memory(f"The user said: {prompt}")
 
     return ai_response
 

@@ -246,7 +246,7 @@ class CharacterTemplate(WorldDefinition):
             old_timezone = self.timezone
             self.location = location_name
             self.timezone = location["timezone"]
-            self.add_memory("System", f"Moved to {location_name}.")
+            self.add_memory(f"Moved to {location_name}.")
            
             # Check for jet lag
             timezone_diff = abs(self.timezone - old_timezone)
@@ -254,7 +254,7 @@ class CharacterTemplate(WorldDefinition):
                 recovery_days = min(timezone_diff // 2, 7)  # Max 7 days to recover
                 self.is_jet_lagged = True
                 self.jet_lag_recovery_date = self.world.current_date + datetime.timedelta(days=recovery_days)
-                self.add_memory("System", f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
+                self.add_memory(f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
 
     def get_age(self) -> int:
         today = self.world.current_date.date()
@@ -266,12 +266,12 @@ class CharacterTemplate(WorldDefinition):
     def celebrate_birthday(self):
         age = self.get_age()
         celebration = f"Celebrated {self.character_name}'s {age}th birthday!"
-        self.add_memory("System", celebration)
+        self.add_memory(celebration)
         
         for friend_name in self.friends:
             friend = self.world.characters.get(friend_name)
             if friend:
-                friend.add_memory("System", f"It's {self.character_name}'s {age}th birthday today!")
+                friend.add_memory(f"It's {self.character_name}'s {age}th birthday today!")
                 friend.add_task_done(f"Wished {self.character_name} a happy birthday")
         
         birthday_tasks = self.generate_birthday_tasks()
@@ -284,14 +284,14 @@ class CharacterTemplate(WorldDefinition):
             
         if self.is_jet_lagged and self.world.current_date >= self.jet_lag_recovery_date:
             self.is_jet_lagged = False
-            self.add_memory("System", "Recovered from jet lag.")
+            self.add_memory("Recovered from jet lag.")
 
         day_summary = self.summarize_day()
-        self.add_memory("System", day_summary)
+        self.add_memory(day_summary)
         
     def summarize_day(self) -> str:
-        recent_memories = self.get_memories(query="today's events", k=10)
-        memory_text = "\n".join([f"Skylow: {m.skylow_message}\nUser: {m.user_message}" for m in recent_memories.memories])
+        recent_memories = self.search_similar_memories(query="today's events", top_k=10)
+        memory_text = "\n".join([f"User: {m['important_info']}" for m in recent_memories])
         
         prompt = f"Summarize the following events of the day for {self.character_name}:\n\n{memory_text}"
         
@@ -315,7 +315,7 @@ class CharacterTemplate(WorldDefinition):
         ]
         
     def add_task_done(self, task: str):
-        self.add_memory("System", f"Task completed: {task}")
+        self.add_memory(f"Task completed: {task}")
 
     def recommend_task(self, task: str):
         # Use OpenAI to determine if the character accepts the task based on personality
@@ -352,7 +352,7 @@ class CharacterTemplate(WorldDefinition):
     def receive_message(self, sender_name: str, message: str):
         summarized_message = self.summarize_message(message)
         experience = f"Received a message from {sender_name}: {summarized_message}"
-        self.add_memory(sender_name, experience)
+        self.add_memory(experience)
 
     def get_local_time(self) -> datetime.datetime:
         return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=self.timezone)))
@@ -415,8 +415,8 @@ class CharacterTemplate(WorldDefinition):
         similar_memories = []
         for match in response.matches:
             memory = {
-                "user_message": match.metadata["user_message"],
-                "date": match.metadata["createdAt"]
+                "important_info": match.metadata["important_info"],
+                "date": match.metadata["createdAt"],
             }
             similar_memories.append(memory)
     
