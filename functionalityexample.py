@@ -73,7 +73,7 @@ def initialize_world():
         world=world,
         name="Robert Martinez",
         date_of_birth=datetime.date(1985, 10, 20),
-        personality={"extroversion": 0.8, "humor": 0.7, "determination": 0.8, "empathy": 0.7},
+        personality={"extroversion": 0.8, "humour": 0.7, "determination": 0.8, "empathy": 0.7},
         timezone="0",
         location="Suburb",
         preferences={"food": "healthy Mexican-inspired cuisine", "climate": "warm"},
@@ -83,17 +83,28 @@ def initialize_world():
         texting_style="Casual and enthusiastic with food emojis and fitness puns",
         character_description=bob_description
     )
-
+    
     world.add_character(alice)
     world.add_character(bob)
-    world.set_relationship("Alice Chen", "Robert Martinez", "friend")
+
+    alice.update_friendship("Robert Martinez", 0.4)
+    bob.update_friendship("Alice Chen", 0.85)
 
     return world
 
 def generate_response(character: CharacterTemplate, prompt: str) -> str:
     # Retrieve relevant memories
-    memories = character.get_memories(prompt, k=3)
-    memory_context = "\n".join([f"You remember: {m['important_info']}" for m in memories])
+    memories = character.get_memories(prompt, k=20)
+    memory_context = "\n".join([
+        f"{'The user' if m['is_user_memory'] else 'You'} did: {m['important_info']}"
+        for m in memories
+    ])
+
+    # Prepare friendship context
+    friendship_context = "\n".join([
+        f"Your friendship with {friend} is at level {level:.2f} (0.0 is stranger, 1.0 is best friend)"
+        for friend, level in character.friends.items()
+    ])    
 
     # Prepare character context
     character_context = f"""
@@ -109,10 +120,12 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
     - Some of your past experiences: {'; '.join(character.past_experiences)}.
     - Your texting style is: {character.texting_style}.
     - You prefer {character.preferences.get('food', 'various foods')} and {character.preferences.get('climate', 'different climates')}.
-    - Your friends include: {', '.join(character.friends)}.
     - Your current skills: {', '.join([f'{k} ({v:.1f}/1.0)' for k, v in character.skills.items()])}.
     - It's currently {character.get_local_time().strftime('%I:%M %p')} where you are.
     - The weather in your location is {st.session_state.world.get_weather(character.location)}.
+
+    Your friendships:
+    {friendship_context}
 
     Recent memories:
     {memory_context}
@@ -133,7 +146,8 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
     ai_response = response.choices[0].message.content.strip()
 
     # Add the interaction to character's memory
-    character.add_memory(f"The user said: {prompt}")
+    character.add_memory(f"The user said: {prompt}", is_user_memory=True)
+    character.add_memory(f"You responded: {ai_response}", is_user_memory=False)
 
     return ai_response
 
@@ -166,6 +180,17 @@ def main():
     st.sidebar.write(f"Age: {character.get_age()}")
     st.sidebar.write(f"Location: {character.location}")
     st.sidebar.write(f"Interests: {', '.join(character.interests)}")
+    st.sidebar.write("Friendships:")
+    for friend, level in character.friends.items():
+        st.sidebar.write(f"  - {friend}: {level:.2f}")
+
+    # Replace "Add Friend" functionality with "Update Friendship"
+    st.sidebar.subheader("Update Friendship")
+    friend_to_update = st.sidebar.selectbox("Select character:", [name for name in character.friends.keys()])
+    friendship_change = st.sidebar.slider("Change friendship by:", -0.5, 0.5, 0.0, 0.1)
+    if st.sidebar.button("Update Friendship"):
+        character.update_friendship(friend_to_update, friendship_change)
+        st.sidebar.write(f"Updated friendship with {friend_to_update}")
 
     # Chat interface
     st.subheader(f"Chat with {character.character_name}")
@@ -198,16 +223,11 @@ def main():
         character.move_to_location(new_location)
         st.sidebar.write(f"{character.character_name} moved to {new_location}")
 
-    new_friend = st.sidebar.selectbox("Add friend:", [name for name in character_names if name != character.character_name])
-    if st.sidebar.button("Add Friend"):
-        character.add_friend(new_friend)
-        st.sidebar.write(f"{new_friend} added as a friend")
-
     # Display recent memories
     st.sidebar.subheader("Recent Memories")
-    memories = character.get_memories("recent events", k=3)
+    memories = character.get_memories("recent events", k=20)
     for memory in memories:
-        st.sidebar.text(f"{memory['date']}: {memory['important_info']}")
+        st.sidebar.text(f"{memory['date']}: {memory['is_user_memory']}: {memory['important_info']}")
 
     # Skill development
     st.sidebar.subheader("Develop Skill")

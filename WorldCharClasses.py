@@ -41,18 +41,15 @@ class WorldDefinition:
         description: str,
         locations: List[Dict[str, Any]] = None,
         global_events: List[Dict[str, Any]] = None,
-        relationships: Dict[str, Dict[str, str]] = None,
         custom_parameters: Dict[str, Any] = None
     ):
         self.name = name
         self.description = description
         self.locations = locations or []
         self.global_events = global_events or []
-        self.relationships = relationships or {}
         self.custom_parameters = custom_parameters or {}
         self.characters = {}
         self.current_date = datetime.datetime.now()
-        self.technologies = []
 
     # force advance time with days parameter
     def advance_time(self, days: int = 1):
@@ -90,28 +87,12 @@ class WorldDefinition:
 
     def add_character(self, character):
         self.characters[character.character_name] = character
-        character._sync_friends_with_world()
-
-    # arguments are name of first character, name of second character, and type of relationship (eg. "friend" or "unfriend")
-    def set_relationship(self, character1: str, character2: str, relationship: str):
-        if character1 not in self.relationships:
-            self.relationships[character1] = {}
-        self.relationships[character1][character2] = relationship
-        
-        # Update friends list in individual character templates if the relationship is "friend"
-        if relationship.lower() == "friend":
-            if character1 in self.characters:
-                self.characters[character1].add_friend(character2)
-            if character2 in self.characters:
-                self.characters[character2].add_friend(character1)
-        elif relationship.lower() == "unfriend":
-            if character1 in self.characters:
-                self.characters[character1].remove_friend(character2)
-            if character2 in self.characters:
-                self.characters[character2].remove_friend(character1)
-
-    def get_relationship(self, character1: str, character2: str) -> str:
-        return self.relationships.get(character1, {}).get(character2, "unknown")
+        # Initialize friendships for the new character
+        character.initialize_friendships()
+        # Update friendships for existing characters
+        for existing_char in self.characters.values():
+            if existing_char != character:
+                existing_char.friends[character.character_name] = 0.0
 
     # other custom parameters if necessary established as dictionary
     def set_custom_parameter(self, key: str, value: Any):
@@ -141,7 +122,6 @@ class CharacterTemplate(WorldDefinition):
             description=world.description,
             locations=world.locations,
             global_events=world.global_events,
-            relationships=world.relationships,
             custom_parameters=world.custom_parameters
         )
         self.world = world
@@ -156,17 +136,16 @@ class CharacterTemplate(WorldDefinition):
         self.past_experiences = past_experiences
         self.texting_style = texting_style
         self.character_description = character_description  # New attribute
-        self.friends = []
+        self.friends = {} 
         self.skills = {}
         self.is_jet_lagged = False
         self.jet_lag_recovery_date = None
-        self._sync_friends_with_world()
 
     def get_embedding(self, text: str) -> list:
         text = text.replace("\n", " ")
         return openai_client.embeddings.create(input=[text], model=embedding_model).data[0].embedding
 
-    def add_memory(self, user_message: str):
+    def add_memory(self, user_message: str, is_user_memory: bool):
         prompt = f"Extract the most important information from this message in a concise format:\n\n{user_message}"
         sys_prompt = """You are an AI assistant that extracts key information from messages. Your task is to:
 
@@ -215,6 +194,7 @@ class CharacterTemplate(WorldDefinition):
                 "createdAt": date_string,
                 "important_info": important_info,
                 "timestamp": date_timestamp,
+                "is_user_memory": is_user_memory, 
             },
         }
         skylow_brainmemories_index.upsert(vectors=[vector])
@@ -232,6 +212,7 @@ class CharacterTemplate(WorldDefinition):
         memory_list = []
         for match in response.matches:
             memory = {
+                "is_user_memory": match.metadata["is_user_memory"],
                 "important_info": match.metadata["important_info"],
                 "date": match.metadata["createdAt"],
             }
@@ -246,7 +227,7 @@ class CharacterTemplate(WorldDefinition):
             old_timezone = self.timezone
             self.location = location_name
             self.timezone = location["timezone"]
-            self.add_memory(f"Moved to {location_name}.")
+            self.add_memory(f"Moved to {location_name}.", is_user_memory=False)
            
             # Check for jet lag
             timezone_diff = abs(self.timezone - old_timezone)
@@ -254,7 +235,7 @@ class CharacterTemplate(WorldDefinition):
                 recovery_days = min(timezone_diff // 2, 7)  # Max 7 days to recover
                 self.is_jet_lagged = True
                 self.jet_lag_recovery_date = self.world.current_date + datetime.timedelta(days=recovery_days)
-                self.add_memory(f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.")
+                self.add_memory(f"Experiencing jet lag after moving to {location_name}. Expected to recover in {recovery_days} days.", is_user_memory=False)
 
     def get_age(self) -> int:
         today = self.world.current_date.date()
@@ -266,13 +247,17 @@ class CharacterTemplate(WorldDefinition):
     def celebrate_birthday(self):
         age = self.get_age()
         celebration = f"Celebrated {self.character_name}'s {age}th birthday!"
-        self.add_memory(celebration)
+        self.add_memory(celebration, is_user_memory=False)
         
-        for friend_name in self.friends:
+        for friend_name, friendship_level in self.friends.items():
             friend = self.world.characters.get(friend_name)
             if friend:
-                friend.add_memory(f"It's {self.character_name}'s {age}th birthday today!")
+                friend.add_memory(f"It's {self.character_name}'s {age}th birthday today!", is_user_memory=False)
                 friend.add_task_done(f"Wished {self.character_name} a happy birthday")
+                # Increase friendship more for close friends
+                friendship_increase = 0.05 * friendship_level
+                self.update_friendship(friend_name, friendship_increase)
+                friend.update_friendship(self.character_name, friendship_increase)
         
         birthday_tasks = self.generate_birthday_tasks()
         for task in birthday_tasks:
@@ -284,10 +269,10 @@ class CharacterTemplate(WorldDefinition):
             
         if self.is_jet_lagged and self.world.current_date >= self.jet_lag_recovery_date:
             self.is_jet_lagged = False
-            self.add_memory("Recovered from jet lag.")
+            self.add_memory("Recovered from jet lag.", is_user_memory=False)
 
         day_summary = self.summarize_day()
-        self.add_memory(day_summary)
+        self.add_memory(day_summary, is_user_memory=False)
         
     def summarize_day(self) -> str:
         recent_memories = self.search_similar_memories(query="today's events", top_k=10)
@@ -307,15 +292,9 @@ class CharacterTemplate(WorldDefinition):
         if skill_name not in self.skills:
             self.skills[skill_name] = 0
         self.skills[skill_name] = min(1.0, self.skills[skill_name] + increase)
-
-    def _sync_friends_with_world(self):
-        self.friends = [
-            char_name for char_name, relation in self.world.relationships.get(self.character_name, {}).items()
-            if relation.lower() == "friend"
-        ]
         
     def add_task_done(self, task: str):
-        self.add_memory(f"Task completed: {task}")
+        self.add_memory(f"Task completed: {task}", is_user_memory=False)
 
     def recommend_task(self, task: str):
         # Use OpenAI to determine if the character accepts the task based on personality
@@ -331,28 +310,34 @@ class CharacterTemplate(WorldDefinition):
             return True
         return False
 
-    def add_friend(self, friend_name: str):
-        if friend_name not in self.friends and friend_name != self.character_name:
-            self.friends.append(friend_name)
-            self.world.set_relationship(self.character_name, friend_name, "friend")            
+    def initialize_friendships(self):
+        for char_name in self.world.characters:
+            if char_name != self.character_name:
+                self.friends[char_name] = 0.0
 
-    # maybe if something happens in chat that changes this aspect of the universe
-    def remove_friend(self, friend_name: str):
-        if friend_name in self.friends:
-            self.friends.remove(friend_name)
-            self.world.set_relationship(self.character_name, friend_name, "unfriend")
+    def update_friendship(self, friend_name: str, change: float):
+        if friend_name != self.character_name:
+            current_level = self.friends.get(friend_name, 0.0)
+            new_level = max(0.0, min(1.0, current_level + change))
+            self.friends[friend_name] = new_level
+            self.add_memory(f"Friendship with {friend_name} changed to level {new_level:.2f}", is_user_memory=False)
+
+    def get_friendship_level(self, friend_name: str) -> float:
+        return self.friends.get(friend_name, 0.0)
 
     # based on talk from meet (user tells char1 hes going to monaco, char2 may only know too if friends with char1)
     def communicate(self, friend_name: str, message: str):
-        if friend_name in self.friends:
-            friend = self.world.characters.get(friend_name)
-            if friend:
-                friend.receive_message(self.character_name, message)
+        friend = self.world.characters.get(friend_name)
+        if friend:
+            friend.receive_message(self.character_name, message)
+            # Increase friendship slightly with each communication
+            self.update_friendship(friend_name, 0.01)
+            friend.update_friendship(self.character_name, 0.01)
 
     def receive_message(self, sender_name: str, message: str):
         summarized_message = self.summarize_message(message)
         experience = f"Received a message from {sender_name}: {summarized_message}"
-        self.add_memory(experience)
+        self.add_memory(experience, is_user_memory=False)
 
     def get_local_time(self) -> datetime.datetime:
         return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=self.timezone)))
