@@ -96,7 +96,7 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
     # Retrieve relevant memories
     memories = character.get_memories(prompt, k=20)
     memory_context = "\n".join([
-        f"{'The user' if m['is_user_memory'] else 'You'} did: {m['important_info']}"
+        f"{m['important_info']}"
         for m in memories
     ])
 
@@ -147,7 +147,7 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
 
     # Add the interaction to character's memory
     character.add_memory(f"The user said: {prompt}", is_user_memory=True)
-    character.add_memory(f"You responded: {ai_response}", is_user_memory=False)
+    character.add_memory(f"{character.character_name} responded: {ai_response}", is_user_memory=False)
 
     return ai_response
 
@@ -227,7 +227,7 @@ def main():
     st.sidebar.subheader("Recent Memories")
     memories = character.get_memories("recent events", k=20)
     for memory in memories:
-        st.sidebar.text(f"{memory['date']}: {memory['is_user_memory']}: {memory['important_info']}")
+        st.sidebar.text(f"{memory['date']}: {memory['important_info']}")
 
     # Skill development
     st.sidebar.subheader("Develop Skill")

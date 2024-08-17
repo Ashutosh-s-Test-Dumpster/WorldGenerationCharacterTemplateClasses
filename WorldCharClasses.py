@@ -15,6 +15,7 @@ import os
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from mem0 import MemoryClient
 from pinecone.grpc import PineconeGRPC as Pinecone
 from pydantic import BaseModel
 
@@ -26,13 +27,7 @@ skylow_brainmemories_index = pinecone_client.Index("fire-ambulance-quick-setup")
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 embedding_model = "text-embedding-3-small"
 
-class Memory(BaseModel):
-    skylow_message: str
-    user_message: str
-    date: str
-
-class Memories(BaseModel):
-    memories: List[Memory]
+mem0_client = MemoryClient(api_key=os.getenv("MEMO_API_KEY"))
 
 class WorldDefinition:
     def __init__(
@@ -141,84 +136,15 @@ class CharacterTemplate(WorldDefinition):
         self.is_jet_lagged = False
         self.jet_lag_recovery_date = None
 
-    def get_embedding(self, text: str) -> list:
-        text = text.replace("\n", " ")
-        return openai_client.embeddings.create(input=[text], model=embedding_model).data[0].embedding
-
     def add_memory(self, user_message: str, is_user_memory: bool):
-        prompt = f"Extract the most important information from this message in a concise format:\n\n{user_message}"
-        sys_prompt = """You are an AI assistant that extracts key information from messages. Your task is to:
-
-        1. Identify and extract only the most important and memorable information from the given message.
-        2. Focus on facts, events, opinions, or emotions that might be significant for future interactions or understanding the context of a conversation.
-        3. Ignore routine or trivial information such as simple greetings, small talk about the weather, or other non-consequential exchanges.
-        4. Summarize the key information in a concise format, ideally in 20 words or less.
-        5. If there is no significant information worth remembering, return an empty string.
-
-        Examples:
-        - Input: "Hi there! How are you doing today?"
-        Output: "" (empty string, as this is just a greeting)
-    
-        - Input: "I just got a new job at Google as a software engineer! I'm starting next month."
-        Output: "Got a new job as software engineer at Google, starting next month."
-    
-        - Input: "I'm feeling really upset because my dog passed away yesterday. He was with me for 15 years."
-        Output: "Dog passed away yesterday after 15 years, feeling very upset."
-    
-        - Input: "Did you hear about the new policy? They're implementing work-from-home Fridays starting next week."
-        Output: "New policy: work-from-home Fridays starting next week."
-
-        Remember, if there's nothing significant to extract, return an empty string."""
-        response = openai_client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        important_info = response.choices[0].message.content.strip()
-
-        if important_info == '""':
-            return
-
         date = datetime.datetime.now()
-        date_string: str = date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        date_timestamp: int = int(date.timestamp())
-        memory_embedding: list = self.get_embedding(important_info)
-
-        vector = {
-            "id": f"{self.character_name}#{date}",
-            "values": memory_embedding,
-            "metadata": {
-                "character_name": self.character_name,
-                "createdAt": date_string,
-                "important_info": important_info,
-                "timestamp": date_timestamp,
-                "is_user_memory": is_user_memory, 
-            },
-        }
-        skylow_brainmemories_index.upsert(vectors=[vector])
+        date_string = date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        memory = f"The {'user' if is_user_memory else self.character_name} said: {user_message}"
+        mem0_client.add(memory, user_id=self.character_name)
 
     def get_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        query_embedding = self.get_embedding(query)
-        response = skylow_brainmemories_index.query(
-            vector=query_embedding,
-            filter={"character_name": {"$eq": self.character_name}},
-            top_k=k,
-            include_values=False,
-            include_metadata=True,
-        )
-
-        memory_list = []
-        for match in response.matches:
-            memory = {
-                "is_user_memory": match.metadata["is_user_memory"],
-                "important_info": match.metadata["important_info"],
-                "date": match.metadata["createdAt"],
-            }
-            memory_list.append(memory)
-        
-        return memory_list
+        response = mem0_client.get_all(user_id=self.character_name)
+        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response]
 
     # make the character move there, and remember it by storing it in current experience (so will be eventually forgotten)
     def move_to_location(self, location_name: str):
@@ -386,23 +312,5 @@ class CharacterTemplate(WorldDefinition):
         
         return response.choices[0].message.content.strip()
 
-    def search_similar_memories(self, query: str, top_k: int = 3):
-        query_embedding = self.get_embedding(query)
-    
-        response = skylow_brainmemories_index.query(
-            vector=query_embedding,
-            filter={"character_name": {"$eq": self.character_name}},
-            top_k=top_k,
-            include_values=False,
-            include_metadata=True,
-        )
-    
-        similar_memories = []
-        for match in response.matches:
-            memory = {
-                "important_info": match.metadata["important_info"],
-                "date": match.metadata["createdAt"],
-            }
-            similar_memories.append(memory)
-    
-        return similar_memories
+    def search_similar_memories(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        return self.get_memories(query, k=top_k)
