@@ -140,10 +140,17 @@ class CharacterTemplate(WorldDefinition):
         date = datetime.datetime.now()
         date_string = date.strftime("%Y-%m-%dT%H:%M:%SZ")
         memory = f"The {'user' if is_user_memory else self.character_name} said: {user_message}"
-        mem0_client.add(memory, user_id=self.character_name)
+        if is_user_memory:
+	   mem0_client.add(memory, user_id="userplayer")
+	else:
+	   mem0_client.add(memory, user_id=self.character_name)
 
     def get_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         response = mem0_client.get_all(user_id=self.character_name)
+        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response]
+
+    def get_user_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        response = mem0_client.get_all(user_id="userplayer")
         return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response]
 
     # make the character move there, and remember it by storing it in current experience (so will be eventually forgotten)

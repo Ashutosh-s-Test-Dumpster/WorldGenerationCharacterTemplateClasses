@@ -100,6 +100,13 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
         for m in memories
     ])
 
+    # Retrieve relevant memories
+    memories_user = character.get_user_memories(prompt, k=20)
+    memory_user_context = "\n".join([
+        f"{m['important_info']}"
+        for m in memories_user
+    ])
+
     # Prepare friendship context
     friendship_context = "\n".join([
         f"Your friendship with {friend} is at level {level:.2f} (0.0 is stranger, 1.0 is best friend)"
@@ -127,8 +134,11 @@ def generate_response(character: CharacterTemplate, prompt: str) -> str:
     Your friendships:
     {friendship_context}
 
-    Recent memories:
+    Recent memories of yours:
     {memory_context}
+    
+    Recent memories the user has with you:
+    {memory_user_context}
 
     Respond to the message exactly as {character.character_name} would, based on all the above information. Don't mention being an AI or that this is a simulation. Your response should reflect your personality, interests, and texting style. If asked about your life, location, friends, or experiences, answer based on the information provided above.
     """
@@ -224,8 +234,14 @@ def main():
         st.sidebar.write(f"{character.character_name} moved to {new_location}")
 
     # Display recent memories
-    st.sidebar.subheader("Recent Memories")
+    st.sidebar.subheader("Recent Memories of the Character")
     memories = character.get_memories("recent events", k=20)
+    for memory in memories:
+        st.sidebar.text(f"{memory['date']}: {memory['important_info']}")
+
+    # Display recent memories
+    st.sidebar.subheader("Recent Memories of the User")
+    memories = character.get_user_memories("recent events", k=20)
     for memory in memories:
         st.sidebar.text(f"{memory['date']}: {memory['important_info']}")
 
