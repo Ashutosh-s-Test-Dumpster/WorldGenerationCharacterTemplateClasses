@@ -148,11 +148,11 @@ class CharacterTemplate(WorldDefinition):
 
     def get_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         response = mem0_client.get_all(user_id=self.character_name)
-        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response]
+        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response][:k]
 
     def get_user_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         response = mem0_client.get_all(user_id="userplayer")
-        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response]
+        return [{"important_info": memory["memory"], "date": memory["created_at"]} for memory in response][:k]
 
     # make the character move there, and remember it by storing it in current experience (so will be eventually forgotten)
     def move_to_location(self, location_name: str):
