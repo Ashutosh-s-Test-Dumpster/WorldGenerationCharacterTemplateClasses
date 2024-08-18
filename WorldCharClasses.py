@@ -141,9 +141,10 @@ class CharacterTemplate(WorldDefinition):
         date_string = date.strftime("%Y-%m-%dT%H:%M:%SZ")
         memory = f"The {'user' if is_user_memory else self.character_name} said: {user_message}"
         if is_user_memory:
-	   mem0_client.add(memory, user_id="userplayer")
-	else:
-	   mem0_client.add(memory, user_id=self.character_name)
+            mem0_client.add(memory, user_id="userplayer")
+        else:
+            mem0_client.add(memory, user_id=self.character_name)
+
 
     def get_memories(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         response = mem0_client.get_all(user_id=self.character_name)
